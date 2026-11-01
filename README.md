@@ -1,7 +1,5 @@
 # Aligned Delta-Triplane Transformers as Occupancy World Models
 
-Haoran Xu, Peixi Peng, Shijun Guo, Guang Tan, Yiqian Chang, Yisen Zhao, Shuaixian Wang, Yonghong Tian
-
 **NeurIPS 2026**
 
 ## Citation
