@@ -1,0 +1,56 @@
+# Reconstructed ADTT representation pretraining, arXiv:2503.07338v5 Eq. 6.
+# This is NOT an author-released configuration. TENTATIVE settings require validation.
+# TENTATIVE implementation choices: V21 (closest released 3D-token variant),
+# float32 arithmetic with TF32/autotuning disabled, and no geometric augmentation.
+stage: representation
+data:
+  label_space: static10  # LEAF adaptation; change to occ3d18 for unmodified Occ3D IDs.
+  grid_size: [200, 200, 16]  # Storage order X,Y,Z; paper lists Z,X,Y.
+  train_manifest: data/manifests/train.jsonl
+  val_manifest: data/manifests/val.jsonl
+  visibility: all  # LEAF samples contain semantics only; masks are required if changed.
+  max_gap_seconds: 0.75  # TENTATIVE allowance around observed 0.5 s cadence.
+representation:
+  channels: 8  # Paper Sec. 4.1.
+  z_down: false  # Retain Z=16 to match the paper's latent resolution.
+  decoder_hidden: 256  # TENTATIVE: released implementation default, experiment unspecified.
+  decoder_layers: 4  # TENTATIVE: released implementation default.
+forecast:
+  history: 4  # Paper Sec. 4.1.
+  future: 6  # Paper Sec. 4.1; also defines validation windows.
+  token_grid: [8, 8, 4]  # Paper Table 5 highlighted row.
+  token_dim: 128  # TENTATIVE resolution of conflict: Sec. 4.1 says 96, Table 5 says 128.
+  depth: 2  # Table 5 highlighted row, pending confirmation of the author configuration.
+  heads: 4  # TENTATIVE: released default; not stated in the paper.
+  dropout: 0.1  # TENTATIVE: released default.
+  ego_queries: 64  # Paper Table 7.
+  external_queries: 192  # Paper Table 7.
+sampling:
+  points: 200000  # TENTATIVE: released sampler default, actual experiment config absent.
+  strategy: balanced  # TENTATIVE: released sampler default.
+  occupied_ratio: 0.9  # TENTATIVE requested quota; absent/rare classes can lower actual fraction.
+  boundary_distance: 2  # TENTATIVE: released sampler default, in voxels.
+loss:
+  ce: 1.0  # Eq. 6 base term.
+  lovasz: 1.0  # TENTATIVE lambda; no numerical value in the paper.
+  latent_l1: 1.0  # Eq. 20 uses L1+L2; inactive in stage 1.
+  latent_l2: 1.0
+  occupancy: 1.0  # TENTATIVE xi; inactive in stage 1.
+training:
+  seed: 0  # TENTATIVE: author seed unspecified.
+  batch_size: 1  # TENTATIVE single-GPU batch size.
+  num_workers: 0  # TENTATIVE I/O setting; sampling occurs in the trainer for resumability.
+  max_steps: 30000  # TENTATIVE budget, NOT a claim of convergence or the paper's duration.
+  optimizer: adamw  # TENTATIVE: the paper does not identify its optimizer.
+  lr: 0.0001  # TENTATIVE: optimizer and LR absent from paper.
+  weight_decay: 0.01  # TENTATIVE AdamW setting.
+  clip_norm: 1.0  # TENTATIVE.
+  schedule: constant  # TENTATIVE; cosine is also implemented.
+  warmup_steps: 0  # TENTATIVE; no warmup recipe is supplied in the paper.
+  min_lr_ratio: 0.01  # TENTATIVE cosine endpoint, unused with constant schedule.
+  checkpoint_every: 500  # TENTATIVE operational setting.
+  keep_checkpoints: 3  # TENTATIVE; best.pt is retained separately.
+  validate_every: 500  # TENTATIVE operational setting.
+  validation_frames: 16  # TENTATIVE diagnostic subset; use 0 via CLI for all validation items.
+  decode_chunk: 50000  # TENTATIVE memory setting; dense validation covers every voxel.
+  checkpoint_decoder: true  # TENTATIVE memory setting: recompute query chunks in backward.

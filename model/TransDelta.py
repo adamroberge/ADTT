@@ -1556,11 +1556,35 @@ class DeltaTokenPredictorV21(DeltaTokenPredictorV2):
     def forward(self, input_occs, querys, xys, xzs, yzs, xyz_labels=None, xyz_centers=None, metas=None):
         del xyz_labels, xys, xzs, yzs
         xys, xzs, yzs = self._encode_triplanes_from_occs(input_occs)
-
         batch_size, total_steps = xys.shape[:2]
         future_steps = max(0, total_steps - self.prev_steps)
         if future_steps <= 0:
             raise ValueError(f'need total_steps > prev_steps, got total_steps={total_steps}, prev_steps={self.prev_steps}')
+        return self.forecast_latents(
+            [plane[:, :self.prev_steps] for plane in (xys, xzs, yzs)],
+            metas, future_steps, querys=querys, xyz_centers=xyz_centers,
+        )
+
+    def forecast_latents(self, history_planes, metas, future_steps, querys=None,
+                         xyz_centers=None, step_embedding_period=None, on_step=None):
+        """Forecast from observed latent states, with no future occupancy input.
+
+        This exposes the released V21 autoregressive loop without encoding future
+        targets merely to specify a horizon. ``None`` preserves the released step
+        embedding lookup. A positive period is an explicitly experimental long-
+        horizon policy, not a paper-specified training setting.
+        """
+        if int(future_steps) <= 0:
+            raise ValueError('future_steps must be positive')
+        future_steps = int(future_steps)
+        if step_embedding_period is not None and int(step_embedding_period) <= 0:
+            raise ValueError('step_embedding_period must be positive or None')
+        xys, xzs, yzs = history_planes
+        if any(plane.ndim != 5 or plane.shape[:2] != xys.shape[:2]
+               for plane in history_planes) or xys.shape[1] != self.prev_steps:
+            raise ValueError('Expected exactly prev_steps latent frames per plane')
+        batch_size = xys.shape[0]
+        total_steps = self.prev_steps + future_steps
 
         xy_hist = xys[:, :self.prev_steps]
         xz_hist = xzs[:, :self.prev_steps]
@@ -1609,6 +1633,8 @@ class DeltaTokenPredictorV21(DeltaTokenPredictorV2):
         known_masks_yz = []
 
         for step_idx in range(future_steps):
+            if on_step is not None:
+                on_step(step_idx)
             ego_token = real_control_tokens[:, step_idx]
             ext_token = external_control_tokens[:, step_idx]
             target_pose_idx = self.prev_steps + step_idx
@@ -1644,7 +1670,7 @@ class DeltaTokenPredictorV21(DeltaTokenPredictorV2):
             decoded_latent_tokens, control_cross_attn = self.triplane_transformer.decode_latent_queries(
                 memory,
                 query_tokens,
-                step_idx,
+                step_idx if step_embedding_period is None else step_idx % int(step_embedding_period),
             )
             decoded_control_tokens = decoded_latent_tokens
 
@@ -1766,6 +1792,7 @@ class DeltaTokenPredictorV21(DeltaTokenPredictorV2):
 
         output = {
             'hexplane': [pred_xys.squeeze(0), pred_xzs.squeeze(0), pred_yzs.squeeze(0)],
+            'predicted_planes': [pred_xys, pred_xzs, pred_yzs],
             'delta_tokens_xy': pred_delta_tokens_xy,
             'delta_tokens_xz': pred_delta_tokens_xz,
             'delta_tokens_yz': pred_delta_tokens_yz,

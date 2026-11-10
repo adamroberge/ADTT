@@ -1,0 +1,8 @@
+# Install into a dedicated environment. CUDA users must select the matching
+# official PyTorch wheel index; see docs/TRAINING.md.
+torch==2.7.1
+torchvision==0.22.1
+mmengine==0.10.7
+numpy==1.26.4
+scipy==1.15.3
+PyYAML>=6.0,<7

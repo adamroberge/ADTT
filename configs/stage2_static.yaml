@@ -1,0 +1,11 @@
+# Reconstructed forecasting training, paper Eq. 20. All inherited TENTATIVE
+# annotations in stage1_static.yaml apply here as well.
+base: stage1_static.yaml
+stage: forecast
+# A stage-1 checkpoint is REQUIRED via --representation-checkpoint unless resuming
+# a complete stage-2 checkpoint. No author checkpoint is assumed to exist.
+training:
+  max_steps: 30000  # TENTATIVE budget, not the authors' undisclosed training duration.
+  lr: 0.0001  # TENTATIVE forecasting optimizer LR.
+loss:
+  occupancy: 1.0  # TENTATIVE xi in Eq. 20; the paper gives no numerical value.

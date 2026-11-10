@@ -15,7 +15,19 @@ If you find this work useful, please cite our paper. The BibTeX file is availabl
 }
 ```
 
-## TODO
+## Training implemented in this fork
+
+This fork adds single-GPU/CPU representation pretraining and forecasting training,
+dense validation, resumable checkpoints, manifest preparation, and a history-only
+rollout/export entry point. See [docs/TRAINING.md](docs/TRAINING.md) for setup,
+data contracts, both stages, evaluation, tests, and paper deviations.
+
+These are **reconstructed implementations, not author-released training recipes**.
+Unpublished hyperparameters are marked `TENTATIVE` in `configs/`. The paper's
+token-dimension inconsistency and long-horizon inference policy are documented.
+Model quality, convergence, and published scores are not established by smoke tests.
+
+## Upstream TODO (author release status)
 
 - [ ] Release training code and configurations.
 - [ ] Release testing and evaluation code and configurations.
