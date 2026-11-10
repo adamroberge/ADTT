@@ -71,8 +71,8 @@ def rollout_parser():
     speed = parser.add_mutually_exclusive_group()
     speed.add_argument("--speed-mps", type=float)
     speed.add_argument("--speed-from-history", action="store_true")
-    parser.add_argument("--embedding-policy", choices=("native", "repeat-training-horizon"),
-                        help="Required for horizons exceeding the trained six-step setting")
+    parser.add_argument("--embedding-policy", choices=("clamp-trained", "native", "repeat-training-horizon"),
+                        default="clamp-trained", help="Default: reuse the final trained step embedding; other policies are ablations")
     parser.add_argument("--gt-frames", type=int, default=35)
     parser.add_argument("--export-label-space", choices=("native", "occ3d18"), default="occ3d18")
     parser.add_argument("--allow-training-scene", action="store_true", help="Debug only; recorded in metadata")
@@ -119,8 +119,6 @@ def rollout_main(args, run, guard):
         raise ValueError("Invalid frame count/FPS")
     if args.start_token and args.start_index is not None:
         raise ValueError("Choose start-token or start-index")
-    if args.frames > config["forecast"]["future"] and args.embedding_policy is None:
-        raise ValueError("Long-horizon embedding policy must be selected explicitly and validated")
     rows = [r for r in read_manifest(args.manifest) if r["scene"] == args.scene]
     if not rows:
         raise ValueError("Scene not found")
@@ -153,8 +151,7 @@ def rollout_main(args, run, guard):
     # Only observed occupancy is read before prediction. Future rows supply poses
     # (recorded mode) or later GT export, never predictor input.
     observed = torch.stack([load_frame(row, config["data"])[0] for row in observed_rows])[None].to(device)
-    period = config["forecast"]["future"] if args.embedding_policy == "repeat-training-horizon" else None
-    planes = forecast(model, observed, [meta], args.frames, guard.step, period)
+    planes = forecast(model, observed, [meta], args.frames, guard.step, args.embedding_policy)
     output = run / "occupancy" / args.scene
     output.mkdir(parents=True)
     mapping = np.asarray(STATIC_TO_OCC3D, dtype=np.uint8) if (
@@ -183,7 +180,8 @@ def rollout_main(args, run, guard):
         recorded_GT_timestamps_us=[r["timestamp"] for r in gt_rows],
         gt_tokens=[r["token"] for r in gt_rows], GT_frames=len(gt_rows), predicted_frames=args.frames,
         trajectory=args.trajectory, fps=args.fps, speed_mps=speed,
-        embedding_policy=args.embedding_policy or "native", paired_with_GT=args.trajectory == "recorded",
+        embedding_policy=args.embedding_policy, trained_future_steps=config["forecast"]["future"],
+        paired_with_GT=args.trajectory == "recorded",
         GT_source="provided semantic grid; static10 remains static after namespace mapping",
         checkpoint_sha256=sha256(args.checkpoint), checkpoint_step=saved["step"],
         source_label_space=config["data"]["label_space"], export_label_space=args.export_label_space,

@@ -71,8 +71,10 @@ def source_receipt(run):
     for directory in ("model", "loss", "dataset", "utils", "adtt_training", "configs", "tools"):
         if (root / directory).exists():
             files.extend(p for p in (root / directory).rglob("*") if p.is_file() and p.suffix in {".py", ".yaml"})
-    files.extend(p for name in ("README.md", "docs/TRAINING.md", "requirements-training.txt",
-                               "LICENSE", "citation.bib", "train.py", "evaluate.py", "rollout.py") if (p := root / name).exists())
+    files.extend(p for name in ("README.md", "requirements-training.txt", "LICENSE", "NOTICE",
+                               "THIRD_PARTY_NOTICES.md", "citation.bib", "train.py", "evaluate.py", "rollout.py")
+                 if (p := root / name).exists())
+    files.extend((root / "docs").glob("*.md"))
     files.extend((root / "licenses").glob("*.txt"))
     hashes = {str(path.relative_to(root)): sha256(path) for path in sorted(files)}
     with zipfile.ZipFile(run / "source.zip", "x", compression=zipfile.ZIP_DEFLATED) as archive:

@@ -6,6 +6,6 @@ stage: forecast
 # a complete stage-2 checkpoint. No author checkpoint is assumed to exist.
 training:
   max_steps: 30000  # TENTATIVE budget, not the authors' undisclosed training duration.
-  lr: 0.0001  # TENTATIVE forecasting optimizer LR.
+  lr: 0.001  # Paper v4; TENTATIVE transfer to v5 static10, as in stage 1.
 loss:
   occupancy: 1.0  # TENTATIVE xi in Eq. 20; the paper gives no numerical value.

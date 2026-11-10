@@ -113,12 +113,18 @@ def make_metas(batch_rows):
                  ego2global_rotation_seq=[r["ego2global_rotation"] for r in rows]) for rows in batch_rows]
 
 
-def forecast(model, observed, metas, future_steps, on_step=None, step_embedding_period=None):
+def forecast(model, observed, metas, future_steps, on_step=None, embedding_policy="clamp-trained"):
     if observed.shape[1] != model.prev_steps or len(metas) != observed.shape[0]:
         raise ValueError("Forecast input must contain exactly the observed history and matching poses")
     history = encode_sequence(model, observed)
+    trained_future = model.num_frames - model.prev_steps
+    if embedding_policy not in {"clamp-trained", "native", "repeat-training-horizon"}:
+        raise ValueError("Unknown future-step embedding policy")
     return model.forecast_latents(history, metas, future_steps,
-                                 on_step=on_step, step_embedding_period=step_embedding_period)["predicted_planes"]
+        on_step=on_step,
+        step_embedding_limit=trained_future - 1 if embedding_policy == "clamp-trained" else None,
+        step_embedding_period=trained_future if embedding_policy == "repeat-training-horizon" else None,
+    )["predicted_planes"]
 
 
 def query_logits(model, planes, queries, chunk_size, checkpoint_chunks=False):

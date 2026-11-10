@@ -1,4 +1,4 @@
-"""Pooled all-voxel or explicitly masked IoU; absent unions remain undefined."""
+"""Pooled IoU with the project convention: zero unions contribute zero."""
 import torch
 
 
@@ -22,19 +22,20 @@ class Confusion:
     def result(self):
         matrix = self.matrix
         unions = matrix.sum(0) + matrix.sum(1) - matrix.diag()
-        ious = [float(matrix[i, i] / unions[i]) if unions[i] else None
+        ious = [float(matrix[i, i] / unions[i]) if unions[i] else 0.0
                 for i in range(len(self.names))]
         occupied = [i for i in range(len(self.names)) if i != self.free]
         tp = int(matrix[occupied][:, occupied].sum())
         fp = int(matrix[self.free, occupied].sum())
         fn = int(matrix[occupied, self.free].sum())
-        values = [ious[i] for i in occupied if ious[i] is not None]
-        all_values = [value for value in ious if value is not None]
+        values = [ious[i] for i in occupied]
         return dict(
             scale="0 to 1", voxels=int(matrix.sum()),
-            geometry_IoU=tp / (tp + fp + fn) if tp + fp + fn else None,
-            semantic_mIoU_nonfree=sum(values) / len(values) if values else None,
-            semantic_mIoU_including_free=sum(all_values) / len(all_values) if all_values else None,
-            nonfree_classes_with_union=len(values), per_class_IoU=dict(zip(self.names, ious)),
-            absent_class_policy="Exclude only zero-union classes; false-positive-only classes score zero",
+            geometry_IoU=tp / (tp + fp + fn) if tp + fp + fn else 0.0,
+            semantic_mIoU_nonfree=sum(values) / len(values),
+            semantic_mIoU_including_free=sum(ious) / len(ious),
+            nonfree_classes_with_union=sum(bool(unions[i]) for i in occupied),
+            nonfree_classes_in_mean=len(occupied), per_class_IoU=dict(zip(self.names, ious)),
+            per_class_union=dict(zip(self.names, unions.tolist())),
+            absent_class_policy="Zero-union classes score zero and remain in the mean",
             confusion_GT_rows_prediction_columns=matrix.tolist())

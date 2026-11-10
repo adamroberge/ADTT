@@ -30,7 +30,8 @@ from adtt_training.data import OccupancyDataset, collate, load_frame
 from adtt_training.device import DeviceGuard, GPUConflict, select_device
 from adtt_training.engine import compute_training_loss, dense_prediction
 from adtt_training.inference import straight_plan
-from adtt_training.losses import occupancy_loss, lovasz_softmax_flat
+from adtt_training.losses import occupancy_loss, lovasz_softmax_flat, latent_loss
+from adtt_training.schedule import learning_rate_factor
 from adtt_training.manifest import MetadataReader, prepare_manifest, read_manifest, sha256
 from adtt_training.metrics import Confusion
 from adtt_training.models import (build_model, controls_from_poses, encode_sequence,
@@ -49,7 +50,7 @@ def tiny_config():
     config["sampling"]["points"] = 32
     config["training"].update(max_steps=4, batch_size=2, checkpoint_every=2,
                                validate_every=2, validation_frames=1, decode_chunk=64,
-                               keep_checkpoints=2)
+                               keep_checkpoints=2, warmup_steps=1)
     return config
 
 
@@ -190,6 +191,23 @@ class ModelTests(Fixture):
             if p.grad is not None:
                 torch.testing.assert_close(p.grad, q.grad, atol=2e-6, rtol=2e-4)
 
+    def test_long_rollout_clamps_to_sixth_trained_embedding(self):
+        self.predictor.num_frames = self.predictor.prev_steps + 6
+        self.predictor.eval()
+        batch = collate([OccupancyDataset(self.manifests["train"], self.config)[0]])
+        history = batch["labels"][:, :2]
+        meta, _ = straight_plan(batch["rows"][0][:2], 9, 2, 1)
+        table = self.predictor.triplane_transformer
+        with torch.no_grad():
+            table.future_step_embed.copy_(torch.randn_like(table.future_step_embed))
+            with mock.patch.object(table, "_step_embed", wraps=table._step_embed) as lookup:
+                clamped = forecast(self.predictor, history, [meta], 9)
+                self.assertEqual([call.args[0] for call in lookup.call_args_list], [0, 1, 2, 3, 4, 5, 5, 5, 5])
+            native = forecast(self.predictor, history, [meta], 9, embedding_policy="native")
+        for a, b in zip(clamped, native):
+            torch.testing.assert_close(a[:, :6], b[:, :6])
+        self.assertTrue(any(not torch.allclose(a[:, 6:], b[:, 6:]) for a, b in zip(clamped, native)))
+
     def test_controls_pose_interval_and_missing_metadata(self):
         rotations = torch.tensor([[1., 0., 0., 0.], [math.sqrt(.5), 0., 0., math.sqrt(.5)],
                                   [math.sqrt(.5), 0., 0., math.sqrt(.5)]])
@@ -207,6 +225,66 @@ class ModelTests(Fixture):
 
 
 class MetricAndGuardTests(unittest.TestCase):
+    def test_project_configs_and_invalid_hyperparameters(self):
+        for filename in ("stage1_static.yaml", "stage2_static.yaml"):
+            config = load_config(ROOT / "configs" / filename)
+            self.assertEqual(config["forecast"]["token_dim"], 96)
+            self.assertEqual(config["data"]["label_space"], "static10")
+            self.assertEqual(config["training"]["schedule"], "cosine")
+            self.assertEqual(config["training"]["warmup_steps"], 500)
+            for section, key, value in (("forecast", "heads", 0), ("training", "lr", float("nan")),
+                    ("training", "weight_decay", -1), ("training", "min_lr_ratio", 2),
+                    ("forecast", "future", 33), ("training", "max_steps", 1.5)):
+                bad = copy.deepcopy(config)
+                bad[section][key] = value
+                with self.assertRaises(ValueError):
+                    validate_config(bad)
+        model = build_model(config)
+        self.assertEqual(model.token_dim, 96)
+        self.assertEqual(model.num_cls, 10)
+        self.assertEqual(model.triplane_class_embeds.num_embeddings, 10)
+        self.assertEqual(model.triplane_transformer.future_step_embed.shape[-1], 96)
+
+    def test_warmup_cosine_endpoints_and_resume(self):
+        training = load_config(ROOT / "configs/stage1_static.yaml")["training"]
+        training.update(warmup_steps=3, max_steps=8)
+        rates = [learning_rate_factor(i, training) * training["lr"] for i in range(9)]
+        self.assertAlmostEqual(rates[0], 1e-6)
+        self.assertAlmostEqual(rates[2], 1e-3)
+        self.assertAlmostEqual(rates[3], 1e-3)
+        self.assertAlmostEqual(rates[7], 1e-6)
+        self.assertAlmostEqual(rates[8], 1e-6)
+        self.assertTrue(all(a <= b for a, b in zip(rates[:2], rates[1:3])))
+        self.assertTrue(all(a >= b for a, b in zip(rates[3:], rates[4:])))
+        parameter = torch.nn.Parameter(torch.tensor(1.0))
+        optimizer = torch.optim.AdamW([parameter], lr=training["lr"])
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda s: learning_rate_factor(s, training))
+        for step in range(8):
+            self.assertAlmostEqual(optimizer.param_groups[0]["lr"], rates[step])
+            parameter.grad = torch.ones_like(parameter)
+            optimizer.step()
+            scheduler.step()
+        training.update(warmup_steps=1, max_steps=2)
+        self.assertEqual(learning_rate_factor(1, training), training["min_lr_ratio"])
+
+    def test_plane_loss_matches_released_values_and_gradients(self):
+        import torch.nn.functional as F
+        tree = ast.parse((ROOT / "loss/recon_loss.py").read_text())
+        cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PlaneLoss")
+        method = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "plane_loss")
+        namespace = {"F": F}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), "released-plane-loss", "exec"), namespace)
+        predictions = [torch.randn(2, 6, 3, *shape, requires_grad=True) for shape in ((8, 8), (8, 2), (8, 2))]
+        copies = [p.detach().clone().requires_grad_() for p in predictions]
+        targets = [torch.randn_like(p) for p in predictions]
+        expected = namespace["plane_loss"](None, predictions, targets)
+        actual, _ = latent_loss(copies, targets, {"latent_l1": 1.0, "latent_l2": 1.0})
+        torch.testing.assert_close(actual, expected)
+        expected.backward()
+        actual.backward()
+        for a, b in zip(predictions, copies):
+            torch.testing.assert_close(a.grad, b.grad)
+
     def test_lovasz_matches_released_values_and_gradients(self):
         import itertools
         from torch.autograd import Variable
@@ -232,7 +310,19 @@ class MetricAndGuardTests(unittest.TestCase):
         self.assertEqual(result["geometry_IoU"], 1)
         self.assertEqual(result["semantic_mIoU_nonfree"], 0)
         self.assertEqual(result["per_class_IoU"]["1"], 0)
-        self.assertIsNone(result["per_class_IoU"]["2"])
+        self.assertEqual(result["per_class_IoU"]["2"], 0)
+        self.assertEqual(result["nonfree_classes_with_union"], 2)
+        self.assertEqual(result["nonfree_classes_in_mean"], 9)
+
+    def test_absent_classes_remain_in_mean_including_empty_case(self):
+        metric = Confusion([str(i) for i in range(10)], 9)
+        self.assertEqual(metric.result()["geometry_IoU"], 0)
+        self.assertEqual(metric.result()["semantic_mIoU_nonfree"], 0)
+        metric.update(torch.tensor([0, 9]), torch.tensor([0, 9]))
+        result = metric.result()
+        self.assertEqual(result["semantic_mIoU_nonfree"], 1 / 9)
+        self.assertEqual(result["semantic_mIoU_including_free"], 2 / 10)
+        self.assertEqual(result["nonfree_classes_with_union"], 1)
 
     def test_losses_are_finite_and_exclude_ignore_targets(self):
         logits = torch.randn(5, 10, requires_grad=True)
@@ -324,7 +414,7 @@ class EndToEndTests(Fixture):
         export = self.directory / "export"
         self.run_command("rollout.py", "--checkpoint", checkpoint, "--manifest", self.manifests["val"],
                          "--scene", "scene-0003", "--work-dir", export, "--trajectory", "straight",
-                         "--speed-mps", 1, "--frames", 100, "--embedding-policy", "repeat-training-horizon")
+                         "--speed-mps", 1, "--frames", 100)
         predicted = np.load(export / "occupancy/scene-0003/pred.npy", allow_pickle=False)
         ground_truth = np.load(export / "occupancy/scene-0003/gt.npy", allow_pickle=False)
         self.assertEqual(predicted.shape, (100, 8, 8, 4))
@@ -332,8 +422,25 @@ class EndToEndTests(Fixture):
         self.assertTrue(set(np.unique(predicted)).issubset({0, 1, 8, 11, 12, 13, 14, 15, 16, 17}))
         metadata = json.loads((export / "metadata.json").read_text())
         self.assertFalse(metadata["paired_with_GT"])
+        self.assertEqual(metadata["embedding_policy"], "clamp-trained")
         self.assertEqual(raw_before, {str(path): sha256(path) for path in self.raw.rglob("*.npz")})
         self.run_command("train.py", "--config", config_file, "--work-dir", full, success=False)
+
+    def test_qualification_coordinator(self):
+        stage1, stage2 = self.directory / "s1.yaml", self.directory / "s2.yaml"
+        stage1.write_text(yaml.safe_dump(self.config))
+        forecast_config = copy.deepcopy(self.config)
+        forecast_config["stage"] = "forecast"
+        stage2.write_text(yaml.safe_dump(forecast_config))
+        work = self.directory / "qualification"
+        self.run_command("tools/qualify_training.py", "--stage1-config", stage1, "--stage2-config", stage2,
+                         "--train-manifest", self.manifests["train"], "--val-manifest", self.manifests["val"],
+                         "--work-dir", work, "--device", "cpu", "--steps", 1, "--rollout-frames", 100)
+        result = json.loads((work / "qualification.json").read_text())
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(len(result["checks"]), 6)
+        self.assertEqual(result["rollout_frames"], 100)
+        self.assertTrue(all(entry["status"] == "PASS" for entry in result["checks"]))
 
 
 if __name__ == "__main__":

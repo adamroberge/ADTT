@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 
@@ -45,12 +46,32 @@ def load_config(path, _seen=None):
 
 
 def validate_config(config):
+    def finite(value, key):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{key} must be a finite number")
+
+    for section in ("training", "loss", "sampling", "representation", "forecast", "data"):
+        for key, value in config[section].items():
+            if isinstance(value, float):
+                finite(value, f"{section}.{key}")
+    integer_fields = {
+        "training": ("batch_size", "max_steps", "validate_every", "checkpoint_every", "decode_chunk",
+                     "keep_checkpoints", "validation_frames", "num_workers", "seed", "warmup_steps"),
+        "forecast": ("history", "future", "token_dim", "heads", "depth", "ego_queries", "external_queries"),
+        "representation": ("channels", "decoder_hidden", "decoder_layers"),
+        "sampling": ("points", "boundary_distance"),
+    }
+    for section, keys in integer_fields.items():
+        for key in keys:
+            value = config[section][key]
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{section}.{key} must be a nonnegative integer")
     if config.get("stage") not in {"representation", "forecast"}:
         raise ValueError("stage must be representation or forecast")
     data = config["data"]
     if data["label_space"] not in LABELS:
         raise ValueError("Unknown label_space")
-    if len(data["grid_size"]) != 3 or any(int(n) < 4 for n in data["grid_size"]):
+    if len(data["grid_size"]) != 3 or any(type(n) is not int or n < 4 for n in data["grid_size"]):
         raise ValueError("grid_size must contain three dimensions >= 4")
     if data.get("visibility", "all") not in {"all", "camera", "lidar"}:
         raise ValueError("visibility must be all, camera or lidar")
@@ -81,6 +102,15 @@ def validate_config(config):
         raise ValueError("warmup_steps must be in [0,max_steps)")
     if config["training"]["lr"] <= 0 or config["training"]["clip_norm"] <= 0:
         raise ValueError("lr and clip_norm must be positive")
+    if config["training"]["weight_decay"] < 0:
+        raise ValueError("weight_decay must be nonnegative")
+    for key in ("min_lr_ratio", "warmup_start_ratio"):
+        if not 0 < config["training"].get(key, 0.001) <= 1:
+            raise ValueError(f"{key} must lie in (0,1]")
+    if data["max_gap_seconds"] <= 0:
+        raise ValueError("max_gap_seconds must be positive")
+    if any(config["representation"][key] < 1 for key in ("channels", "decoder_hidden", "decoder_layers")):
+        raise ValueError("Representation dimensions must be positive")
     if any(config["loss"][name] < 0 for name in ("ce", "lovasz", "latent_l1", "latent_l2", "occupancy")):
         raise ValueError("Loss weights must be nonnegative")
     if config["loss"]["ce"] + config["loss"]["lovasz"] <= 0:
@@ -88,6 +118,14 @@ def validate_config(config):
     forecast = config["forecast"]
     if int(forecast["history"]) < 1 or int(forecast["future"]) < 1:
         raise ValueError("history/future must be positive")
+    if forecast["future"] > 32:
+        raise ValueError("Training horizon exceeds the released 32-entry future-step table")
+    if any(forecast[key] < 1 for key in ("token_dim", "heads", "depth")):
+        raise ValueError("token_dim, heads and depth must be positive")
+    if not 0 <= forecast["dropout"] < 1:
+        raise ValueError("dropout must lie in [0,1)")
+    if len(forecast["token_grid"]) != 3 or any(type(n) is not int or n < 1 for n in forecast["token_grid"]):
+        raise ValueError("token_grid must contain three positive integers")
     if forecast["token_dim"] % forecast["heads"]:
         raise ValueError("token_dim must be divisible by heads")
     tokens = 1

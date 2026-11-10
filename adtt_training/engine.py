@@ -21,6 +21,7 @@ from .metrics import Confusion
 from .models import (build_model, encode_sequence, forecast, make_metas,
                      query_logits, transfer_representation)
 from .sampling import get_query
+from .schedule import learning_rate_factor
 
 
 def initialize_runtime(args, guard):
@@ -182,14 +183,7 @@ def train(config, run, guard, args):
     optimizer_type = {"adamw": torch.optim.AdamW, "adam": torch.optim.Adam}[training["optimizer"]]
     optimizer = optimizer_type([p for p in model.parameters() if p.requires_grad],
                                lr=training["lr"], weight_decay=training["weight_decay"])
-    def factor(step):
-        if step < training["warmup_steps"]:
-            return (step + 1) / training["warmup_steps"]
-        if training["schedule"] == "constant":
-            return 1.0
-        progress = (min(step, training["max_steps"]) - training["warmup_steps"]) / (training["max_steps"] - training["warmup_steps"])
-        return training["min_lr_ratio"] + (1 - training["min_lr_ratio"]) * (1 + math.cos(math.pi * progress)) / 2
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: learning_rate_factor(step, training))
     step, epoch, next_batch, best_score = 0, 0, 0, None
     if args.resume:
         saved = load_checkpoint(args.resume)
@@ -246,7 +240,10 @@ def train(config, run, guard, args):
         emit("checkpoint", path=str(path), sha256=digest, best=is_best)
     try:
         emit("started", parameters=sum(p.numel() for p in model.parameters()),
-             trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad), end_step=end_step)
+             trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad), end_step=end_step,
+             torch_version=str(torch.__version__), cuda_version=torch.version.cuda,
+             device_name=torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu",
+             visible_devices=torch.cuda.device_count() if device.type == "cuda" else 0)
         metrics = evaluate(model, validation_data, config, device, guard)
         atomic_json(run / f"validation-{step:08d}.json", metrics)
         emit("initial_validation", metrics=metrics["aggregate"])
@@ -264,7 +261,8 @@ def train(config, run, guard, args):
                 if not bool(torch.isfinite(loss)):
                     raise FloatingPointError("Non-finite training loss")
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), training["clip_norm"], error_if_nonfinite=True)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), training["clip_norm"], error_if_nonfinite=True)
+                used_lr = optimizer.param_groups[0]["lr"]
                 optimizer.step()
                 scheduler.step()
                 if device.type == "cuda":
@@ -278,7 +276,8 @@ def train(config, run, guard, args):
                     tokens=[[r["token"] for r in rows] for rows in batch["rows"]],
                     frame_content_sha256=batch["frame_content_sha256"],
                     sampled_class_counts=sampled_counts, **values), allow_nan=False) + "\n")
-                emit("training", epoch=epoch, next_batch=next_batch, lr=scheduler.get_last_lr()[0],
+                emit("training", epoch=epoch, next_batch=next_batch, lr=used_lr,
+                     next_lr=scheduler.get_last_lr()[0], grad_norm=float(grad_norm),
                      step_seconds=time.perf_counter() - tick, **values)
                 is_best = False
                 if step % training["validate_every"] == 0 or step == end_step:
@@ -305,6 +304,9 @@ def train(config, run, guard, args):
         raise
     finally:
         result.update(step=step, epoch=epoch, next_batch=next_batch, seconds=time.perf_counter() - started)
+        if device.type == "cuda":
+            result.update(peak_allocated_bytes=torch.cuda.max_memory_allocated(0),
+                          peak_reserved_bytes=torch.cuda.max_memory_reserved(0))
         atomic_json(run / "summary.json", result)
         log.close()
         trace.close()

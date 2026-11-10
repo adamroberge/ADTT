@@ -21,10 +21,14 @@ This fork adds single-GPU/CPU representation pretraining and forecasting trainin
 dense validation, resumable checkpoints, manifest preparation, and a history-only
 rollout/export entry point. See [docs/TRAINING.md](docs/TRAINING.md) for setup,
 data contracts, both stages, evaluation, tests, and paper deviations.
+Start with the [single-GPU runbook](docs/SINGLE_GPU.md) for a fresh remote clone.
 
 These are **reconstructed implementations, not author-released training recipes**.
 Unpublished hyperparameters are marked `TENTATIVE` in `configs/`. The paper's
 token-dimension inconsistency and long-horizon inference policy are documented.
+The project configuration uses **static10**, **96-dimensional forecast tokens**,
+AdamW with warmup/cosine decay, summed per-plane regression, zero for absent-class
+IoU, and the final trained step embedding for forecasts beyond six frames.
 Model quality, convergence, and published scores are not established by smoke tests.
 
 ## Upstream TODO (author release status)
@@ -33,6 +37,12 @@ Model quality, convergence, and published scores are not established by smoke te
 - [ ] Release testing and evaluation code and configurations.
 
 Training and testing code will be made publicly available in a future update.
+
+<details>
+<summary>Historical upstream environment and dataset instructions</summary>
+
+The single-GPU training entry points above use `requirements-training.txt` and
+existing LEAF static10 data. The following instructions describe the older upstream stack.
 
 ## 🛠️Environment
 
@@ -58,6 +68,8 @@ Install Pytorch 1.13 + CUDA 11.6
 5. Download train/val pickle files and put them in data/
     [nuscenes_infos_train_temporal_v3_scene.pkl](https://cloud.tsinghua.edu.cn/d/9e231ed16e4a4caca3bd/)
     [nuscenes_infos_val_temporal_v3_scene.pkl](https://cloud.tsinghua.edu.cn/d/9e231ed16e4a4caca3bd/)
+
+</details>
 
 ## License
 

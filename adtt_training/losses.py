@@ -44,11 +44,17 @@ def occupancy_loss(logits, labels, weights, mask=None):
 
 
 def latent_loss(predictions, targets, weights):
-    """Average each loss over voxels/channels, then equally over three planes.
+    """Match released loss/recon_loss.py::PlaneLoss.plane_loss exactly.
 
-    The explicit per-plane mean approximates Eq. 20's expectation over uv and
-    avoids the larger XY plane implicitly receiving more weight.
+    Mean L1 and MSE within each plane, then SUM the three plane losses. Paper
+    v5 Eq. 20 specifies L1+L2 but does not explicitly resolve the plane reduction;
+    the released implementation does. This gives each plane equal weight while
+    retaining the source loss scale relative to xi * occupancy_loss.
     """
-    l1 = torch.stack([F.l1_loss(p, t) for p, t in zip(predictions, targets)]).mean()
-    l2 = torch.stack([F.mse_loss(p, t) for p, t in zip(predictions, targets)]).mean()
+    if len(predictions) != 3 or len(targets) != 3:
+        raise ValueError("Expected exactly three predicted and target planes")
+    if any(p.shape != t.shape for p, t in zip(predictions, targets)):
+        raise ValueError("Predicted and target plane shapes must match")
+    l1 = torch.stack([F.l1_loss(p, t) for p, t in zip(predictions, targets)]).sum()
+    l2 = torch.stack([F.mse_loss(p, t) for p, t in zip(predictions, targets)]).sum()
     return weights["latent_l1"] * l1 + weights["latent_l2"] * l2, {"latent_l1": l1, "latent_l2": l2}

@@ -1566,19 +1566,24 @@ class DeltaTokenPredictorV21(DeltaTokenPredictorV2):
         )
 
     def forecast_latents(self, history_planes, metas, future_steps, querys=None,
-                         xyz_centers=None, step_embedding_period=None, on_step=None):
+                         xyz_centers=None, step_embedding_period=None, on_step=None,
+                         step_embedding_limit=None):
         """Forecast from observed latent states, with no future occupancy input.
 
         This exposes the released V21 autoregressive loop without encoding future
         targets merely to specify a horizon. ``None`` preserves the released step
-        embedding lookup. A positive period is an explicitly experimental long-
-        horizon policy, not a paper-specified training setting.
+        embedding lookup. A limit reuses the final trained embedding beyond its
+        index; a period repeats embeddings. These are explicit long-horizon
+        policies, not paper-specified training settings.
         """
         if int(future_steps) <= 0:
             raise ValueError('future_steps must be positive')
         future_steps = int(future_steps)
         if step_embedding_period is not None and int(step_embedding_period) <= 0:
             raise ValueError('step_embedding_period must be positive or None')
+        if step_embedding_limit is not None:
+            if step_embedding_period is not None or not 0 <= int(step_embedding_limit) < self.triplane_transformer.future_step_embed.shape[1]:
+                raise ValueError('Use one embedding policy and a limit inside the embedding table')
         xys, xzs, yzs = history_planes
         if any(plane.ndim != 5 or plane.shape[:2] != xys.shape[:2]
                for plane in history_planes) or xys.shape[1] != self.prev_steps:
@@ -1670,7 +1675,8 @@ class DeltaTokenPredictorV21(DeltaTokenPredictorV2):
             decoded_latent_tokens, control_cross_attn = self.triplane_transformer.decode_latent_queries(
                 memory,
                 query_tokens,
-                step_idx if step_embedding_period is None else step_idx % int(step_embedding_period),
+                (min(step_idx, int(step_embedding_limit)) if step_embedding_limit is not None else
+                 step_idx if step_embedding_period is None else step_idx % int(step_embedding_period)),
             )
             decoded_control_tokens = decoded_latent_tokens
 

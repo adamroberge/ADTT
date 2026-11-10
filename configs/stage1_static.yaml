@@ -19,7 +19,7 @@ forecast:
   history: 4  # Paper Sec. 4.1.
   future: 6  # Paper Sec. 4.1; also defines validation windows.
   token_grid: [8, 8, 4]  # Paper Table 5 highlighted row.
-  token_dim: 128  # TENTATIVE resolution of conflict: Sec. 4.1 says 96, Table 5 says 128.
+  token_dim: 96  # Paper v5 Sec. 4.1; follow the explicit text despite Table 5's 128 row.
   depth: 2  # Table 5 highlighted row, pending confirmation of the author configuration.
   heads: 4  # TENTATIVE: released default; not stated in the paper.
   dropout: 0.1  # TENTATIVE: released default.
@@ -41,13 +41,14 @@ training:
   batch_size: 1  # TENTATIVE single-GPU batch size.
   num_workers: 0  # TENTATIVE I/O setting; sampling occurs in the trainer for resumability.
   max_steps: 30000  # TENTATIVE budget, NOT a claim of convergence or the paper's duration.
-  optimizer: adamw  # TENTATIVE: the paper does not identify its optimizer.
-  lr: 0.0001  # TENTATIVE: optimizer and LR absent from paper.
-  weight_decay: 0.01  # TENTATIVE AdamW setting.
+  optimizer: adamw  # Paper v4 Sec. 4.1; transferring that recipe to v5 is TENTATIVE.
+  lr: 0.001  # Paper v4 initial LR; TENTATIVE for the v5 static10 single-GPU adaptation.
+  weight_decay: 0.01  # Paper v4 Sec. 4.1.
   clip_norm: 1.0  # TENTATIVE.
-  schedule: constant  # TENTATIVE; cosine is also implemented.
-  warmup_steps: 0  # TENTATIVE; no warmup recipe is supplied in the paper.
-  min_lr_ratio: 0.01  # TENTATIVE cosine endpoint, unused with constant schedule.
+  schedule: cosine  # Paper v4 cosine decay; use linear warmup followed by cosine.
+  warmup_steps: 500  # TENTATIVE: released save_triplane.py default, not a full training recipe.
+  warmup_start_ratio: 0.001  # TENTATIVE warmup start: 1e-6 at the configured 1e-3 peak LR.
+  min_lr_ratio: 0.001  # Paper v4 endpoint 1e-6 / peak 1e-3.
   checkpoint_every: 500  # TENTATIVE operational setting.
   keep_checkpoints: 3  # TENTATIVE; best.pt is retained separately.
   validate_every: 500  # TENTATIVE operational setting.
